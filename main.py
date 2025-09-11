@@ -154,7 +154,7 @@ async def process_with_gpt4o(text: str) -> tuple[str, List[Dict[str, str]]]:
         {text}
 
         Tasks:
-        1. Summarize the content into a clear, concise version in point form.
+        1. Summarize the content into a clear, concise version in bullet-point format, written in a professional tone suitable for direct communication to a user.
         2. Identify all departments or organizational units mentioned in the text and extract their associated email addresses, if available. Each entry should include the department name and its email. If no email is provided, use null.
 
         Return the response strictly in JSON format:
@@ -224,7 +224,7 @@ def prepare_email_data(departments: List[Dict[str, str]], summary: str, filename
             email_list.append({
                 "department": dept["name"],
                 "summary": summary,
-                "subject": f"Document Summary for {dept['name']}: {filename}",
+                "subject": f"Notice Summary for {dept['name']}: {filename}",
                 "to": dept["email"]
             })
     return email_list
@@ -384,6 +384,51 @@ async def chat(request: ChatRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}"
         )
+    
+@app.get("/all")
+async def get_all_documents(page: int = 1, limit: int = 5):
+    """Return paginated documents from the collection.
+
+    Query Params:
+      page: 1-based page index (default 1)
+      limit: page size (default 5, max 50)
+    """
+    try:
+        if page < 1:
+            page = 1
+        if limit < 1:
+            limit = 5
+        if limit > 50:
+            limit = 50
+
+        collection = mongo_client[DB_NAME][COLLECTION_NAME]
+
+        total = await collection.count_documents({})
+        skip = (page - 1) * limit
+
+        cursor = collection.find().sort("timestamp", -1).skip(skip).limit(limit)
+        docs = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            docs.append(doc)
+
+        total_pages = (total + limit - 1) // limit if limit else 1
+
+        return {
+            "data": docs,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_prev": page > 1
+        }
+    except Exception as e:
+        logger.error(f"Error fetching paginated documents: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch documents: {str(e)}"
+        )
 
 # Health check endpoint
 @app.get("/health")
@@ -405,19 +450,3 @@ async def shutdown_event():
         mongo_client.close()
         logger.info("MongoDB connection closed")
 
-@app.get("/all")
-async def get_all_documents():
-    try:
-        collection = mongo_client[DB_NAME][COLLECTION_NAME]
-        cursor = collection.find()
-        docs = []
-        async for doc in cursor:
-            doc["_id"] = str(doc["_id"])
-            docs.append(doc)
-        return docs
-    except Exception as e:
-        logger.error(f"Error fetching all documents: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch documents: {str(e)}"
-        )
