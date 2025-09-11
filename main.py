@@ -13,7 +13,7 @@ import json
 import aiosmtplib
 from email.message import EmailMessage
 from bson import ObjectId
-
+from fastapi.middleware.cors import CORSMiddleware
 # Load environment variables from .env file
 load_dotenv()
 
@@ -23,6 +23,14 @@ logger = logging.getLogger("main")  # Use a specific logger for your app
 
 # Initialize FastAPI app
 app = FastAPI(title="kko-backend", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 # Configuration from environment variables
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
