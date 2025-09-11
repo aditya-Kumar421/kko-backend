@@ -273,8 +273,8 @@ async def answer_question(mongo_id: str, question: str) -> str:
         prompt = f"""
         Using the following document summary and extracted text, answer the question in 20–30 words:
         
-        Summary: {summary}
-        Extracted Text: {extracted_text[:1000]}... (truncated for brevity)
+        Summary: {summary}  
+        Extracted Text: {extracted_text}
         
         Question: {question}
         
@@ -404,3 +404,20 @@ async def shutdown_event():
     if mongo_client:
         mongo_client.close()
         logger.info("MongoDB connection closed")
+
+@app.get("/all")
+async def get_all_documents():
+    try:
+        collection = mongo_client[DB_NAME][COLLECTION_NAME]
+        cursor = collection.find()
+        docs = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            docs.append(doc)
+        return docs
+    except Exception as e:
+        logger.error(f"Error fetching all documents: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch documents: {str(e)}"
+        )
