@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
 from google.cloud import documentai_v1 as documentai
 from google.oauth2 import service_account
-from openai import AsyncAzureOpenAI
+import google.generativeai as genai
 import os
 from datetime import datetime
 from typing import List, Dict
@@ -36,10 +36,7 @@ app.add_middleware(
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 DB_NAME = os.getenv("DB_NAME", "kko_db")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "summaries")
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+GOOGLE_GEMINI_KEY = os.getenv("GOOGLE_GEMINI_KEY")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")
 DOCUMENT_AI_LOCATION = os.getenv("DOCUMENT_AI_LOCATION", "us")
@@ -52,7 +49,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 # Global variables for clients
 mongo_client = None
 documentai_client = None
-azure_openai_client = None
+gemini_model = None
 
 # Pydantic models
 class SummaryResponse(BaseModel):
@@ -71,7 +68,7 @@ class ChatResponse(BaseModel):
 # Startup event to initialize clients
 @app.on_event("startup")
 async def startup_event():
-    global mongo_client, documentai_client, azure_openai_client
+    global mongo_client, documentai_client, gemini_model
     try:
         # Initialize MongoDB client
         mongo_client = AsyncIOMotorClient(MONGO_URI)
@@ -92,15 +89,12 @@ async def startup_event():
         except Exception as e:
             raise ValueError(f"Failed to initialize Google Document AI client: {str(e)}")
 
-        # Initialize Azure OpenAI client
-        if not AZURE_OPENAI_KEY or not AZURE_OPENAI_ENDPOINT:
-            raise ValueError("AZURE_OPENAI_KEY or AZURE_OPENAI_ENDPOINT not set")
-        azure_openai_client = AsyncAzureOpenAI(
-            api_key=AZURE_OPENAI_KEY,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            api_version=AZURE_OPENAI_API_VERSION
-        )
-        logger.info("Azure OpenAI client initialized")
+        # Initialize Google Gemini client
+        if not GOOGLE_GEMINI_KEY:
+            raise ValueError("GOOGLE_GEMINI_KEY not set in .env")
+        genai.configure(api_key=GOOGLE_GEMINI_KEY)
+        gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+        logger.info("Google Gemini Flash 2.0 client initialized")
 
         # Validate SMTP configuration
         if not SMTP_USER or not SMTP_PASSWORD or not SMTP_SERVER:
@@ -145,8 +139,8 @@ async def extract_text_from_pdf(file_content: bytes) -> str:
             detail=f"Failed to extract text from PDF: {str(e)}"
         )
 
-# Helper function to process text with Azure OpenAI GPT-4o
-async def process_with_gpt4o(text: str) -> tuple[str, List[Dict[str, str]]]:
+# Helper function to process text with Google Gemini Flash 2.0
+async def process_with_gemini(text: str) -> tuple[str, List[Dict[str, str]]]:
     try:
         prompt = f"""
         Analyze the following text extracted from a PDF document:
@@ -168,52 +162,51 @@ async def process_with_gpt4o(text: str) -> tuple[str, List[Dict[str, str]]]:
         }}
         ```
         """
-        response = await azure_openai_client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes documents and extracts department names with emails. Always return a JSON object with 'summary' (string) and 'departments' (list of dicts)."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
         
-        result = response.choices[0].message.content
+        response = gemini_model.generate_content(prompt)
+        result = response.text
+        
+        # Extract JSON from the response (remove markdown code blocks if present)
+        if "```json" in result:
+            result = result.split("```json")[1].split("```")[0].strip()
+        elif "```" in result:
+            result = result.split("```")[1].split("```")[0].strip()
         
         try:
             parsed_result = json.loads(result)
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Azure OpenAI response as JSON: {result}, error: {str(e)}")
+            logger.error(f"Failed to parse Gemini response as JSON: {result}, error: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid JSON response from Azure OpenAI"
+                detail="Invalid JSON response from Google Gemini"
             )
         
         if not isinstance(parsed_result, dict) or "summary" not in parsed_result or "departments" not in parsed_result:
             logger.error(f"Invalid response structure: {parsed_result}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Azure OpenAI response missing required fields"
+                detail="Gemini response missing required fields"
             )
         
         if not isinstance(parsed_result["summary"], str):
             logger.error(f"Invalid summary type: {type(parsed_result['summary'])}, value: {parsed_result['summary']}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Azure OpenAI returned invalid summary type"
+                detail="Gemini returned invalid summary type"
             )
         if not isinstance(parsed_result["departments"], list) or not all(isinstance(d, dict) and "name" in d and "email" in d for d in parsed_result["departments"]):
             logger.error(f"Invalid departments format: {parsed_result['departments']}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid departments format returned from Azure OpenAI"
+                detail="Invalid departments format returned from Gemini"
             )
         
         return parsed_result["summary"], parsed_result["departments"]
     except Exception as e:
-        logger.error(f"Error processing text with Azure OpenAI: {str(e)}")
+        logger.error(f"Error processing text with Google Gemini: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process text with Azure OpenAI: {str(e)}"
+            detail=f"Failed to process text with Google Gemini: {str(e)}"
         )
 
 # Helper function to prepare email data
@@ -255,7 +248,7 @@ async def send_emails_async(email_data: List[Dict[str, str]]):
         except Exception as e:
             logger.error(f"Failed to send email to {email_entry['to']}: {str(e)}")
 
-# Helper function to answer questions with Azure OpenAI
+# Helper function to answer questions with Google Gemini
 async def answer_question(mongo_id: str, question: str) -> str:
     try:
         collection = mongo_client[DB_NAME][COLLECTION_NAME]
@@ -281,15 +274,8 @@ async def answer_question(mongo_id: str, question: str) -> str:
         Provide a clear, concise answer (20–30 words) in plain text.
         """
         
-        response = await azure_openai_client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant. Answer questions based on the provided document summary and text in 20–30 words."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        
-        answer = response.choices[0].message.content.strip()
+        response = gemini_model.generate_content(prompt)
+        answer = response.text.strip()
         
         word_count = len(answer.split())
         if word_count < 20 or word_count > 30:
@@ -319,19 +305,19 @@ async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundT
     try:
         file_content = await file.read()
         extracted_text = await extract_text_from_pdf(file_content)
-        summary, departments = await process_with_gpt4o(extracted_text)
+        summary, departments = await process_with_gemini(extracted_text)
         
         if not isinstance(summary, str):
             logger.error(f"Invalid summary type: {type(summary)}, value: {summary}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid summary format returned from Azure OpenAI"
+                detail="Invalid summary format returned from Google Gemini"
             )
         if not isinstance(departments, list) or not all(isinstance(d, dict) and "name" in d and "email" in d for d in departments):
             logger.error(f"Invalid departments format: {departments}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Invalid departments format returned from Azure OpenAI"
+                detail="Invalid departments format returned from Google Gemini"
             )
         
         email_data = prepare_email_data(departments, summary, file.filename)
