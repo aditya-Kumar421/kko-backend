@@ -119,8 +119,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 ## 📚 API Documentation
 
 ### Interactive Documentation
-- **Swagger UI:** [https://kko-backend.adityakumar.live/docs](https://kko-backend.adityakumar.live/docs)
-- **ReDoc:** [https://kko-backend.adityakumar.live/redoc](https://kko-backend.adityakumar.live/redoc)
+- **Swagger UI:** [https://kko-backend.adityakumar.live/docs](https://kko-backend.adityakumarx.tech/docs)
+- **ReDoc:** [https://kko-backend.adityakumar.live/redoc](https://kko-backend.adityakumarx.tech/redoc)
 
 ### API Endpoints Overview
 
